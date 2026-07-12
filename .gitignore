@@ -8,6 +8,7 @@ __pycache__/
 *.so
 *.csv
 *.xls
+*.txt
 # Distribution / packaging
 .Python
 build/
