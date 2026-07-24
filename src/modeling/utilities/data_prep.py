@@ -55,11 +55,13 @@ def create_split_dfs(df: pd.DataFrame)->list[pd.DataFrame]:
 # ---------------------------------------------------------------------------- #
 
 def setup_sequential_data(x_df, y_df, seq_size):
-    X, y = [], []
+    X, y, y_idx = [], [], []
     for i in range(seq_size, len(x_df) + 1):
         seq_x = x_df.iloc[(i-seq_size): i]
         
         X.append(np.array(seq_x))
-        y.append(y_df.target.iloc[i-1])
+        target_pos_idx = i-1
+        y.append(y_df.target.iloc[target_pos_idx])
+        y_idx.append(y_df.target.iloc[target_pos_idx:target_pos_idx].index.start)
     
-    return np.array(X), np.array(y)
+    return np.array(X), np.array(y), np.array(y_idx)
