@@ -56,6 +56,7 @@ def create_split_dfs(df: pd.DataFrame)->list[pd.DataFrame]:
 
 def setup_sequential_data(x_df, y_df, seq_size):
     X, y, y_idx = [], [], []
+    assert len(x_df) == len(y_df), "x_df and y_df must be aligned"
     for i in range(seq_size, len(x_df) + 1):
         seq_x = x_df.iloc[(i-seq_size): i]
         

@@ -1,15 +1,7 @@
 # import
-import pandas as pd
-import logging
-import time
-
 import numpy as np
-import matplotlib.pyplot as plt
-
-import tensorflow_datasets as tfds
 import tensorflow as tf
-import os
-from pathlib import Path
+from keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
 
 # ---------------------------------------------------------------------------- #
@@ -37,6 +29,7 @@ class PositionalEmbedding(tf.keras.layers.Layer):
     def __init__(self,  d_model, max_length=2048):
         super().__init__()
         self.d_model = d_model
+        self.max_length = max_length
         self.projection = tf.keras.layers.Dense( d_model)
         self.pos_encoding = positional_encoding(length=max_length, depth=d_model)
 
@@ -54,6 +47,14 @@ class PositionalEmbedding(tf.keras.layers.Layer):
 
         return x
     
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "d_model": self.d_model,
+            "max_length": self.max_length,
+        })
+        return config
+    
 
 # ---------------------------------------------------------------------------- #
 #                             Base Attention Layer                             #
@@ -61,10 +62,24 @@ class PositionalEmbedding(tf.keras.layers.Layer):
 
 class BaseAttention(tf.keras.layers.Layer):
     def __init__(self, **kwargs):
-        super().__init__()
+        # kwargs here are the MultiHeadAttention kwargs (num_heads, key_dim, dropout, ...)
+        # separate out any Layer-level kwargs (name, dtype, trainable) so they
+        # go to the Layer constructor instead of MultiHeadAttention.
+        layer_kwargs = {}
+        for key in ("name", "dtype", "trainable"):
+            if key in kwargs:
+                layer_kwargs[key] = kwargs.pop(key)
+
+        super().__init__(**layer_kwargs)
+        self.mha_kwargs = kwargs
         self.mha = tf.keras.layers.MultiHeadAttention(**kwargs)
         self.layernorm = tf.keras.layers.LayerNormalization()
         self.add = tf.keras.layers.Add()
+
+    def get_config(self):
+        config = super().get_config()
+        config.update(self.mha_kwargs)
+        return config
 
 
 # ---------------------------------------------------------------------------- #
@@ -129,8 +144,11 @@ class CausalSelfAttention(BaseAttention):
 
 
 class FeedForward(tf.keras.layers.Layer):
-    def __init__(self, d_model, dff, dropout_rate=0.1):
-        super().__init__()
+    def __init__(self, d_model, dff, dropout_rate=0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.d_model = d_model
+        self.dff = dff
+        self.dropout_rate = dropout_rate
         self.seq = tf.keras.Sequential([
             tf.keras.layers.Dense(dff, activation='relu'),
             tf.keras.layers.Dense(d_model),
@@ -143,6 +161,15 @@ class FeedForward(tf.keras.layers.Layer):
         x = self.add([x, self.seq(x)])
         x = self.layer_norm(x)
         return x
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "d_model": self.d_model,
+            "dff": self.dff,
+            "dropout_rate": self.dropout_rate,
+        })
+        return config
     
 
 # ---------------------------------------------------------------------------- #
@@ -150,8 +177,13 @@ class FeedForward(tf.keras.layers.Layer):
 # ---------------------------------------------------------------------------- #
 
 class EncoderLayer(tf.keras.layers.Layer):
-    def __init__(self, *, d_model, num_heads, dff, dropout_rate=0.1):
-        super().__init__()
+    def __init__(self, *, d_model, num_heads, dff, dropout_rate=0.1, **kwargs):
+        super().__init__(**kwargs)
+
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.dff = dff
+        self.dropout_rate = dropout_rate
 
         self.self_attention = GlobalSelfAttention(
             num_heads=num_heads,
@@ -164,18 +196,32 @@ class EncoderLayer(tf.keras.layers.Layer):
         x = self.self_attention(x)
         x = self.ffn(x)
         return x
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "d_model": self.d_model,
+            "num_heads": self.num_heads,
+            "dff": self.dff,
+            "dropout_rate": self.dropout_rate,
+        })
+        return config
     
 # ---------------------------------------------------------------------------- #
 
 class Encoder(tf.keras.layers.Layer):
     def __init__(self, *, num_layers, d_model, num_heads,
                  dff, #vocab_size,
-                 dropout_rate=0.1
+                 dropout_rate=0.1,
+                 **kwargs
                  ):
-        super().__init__()
+        super().__init__(**kwargs)
 
         self.d_model = d_model
         self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.dff = dff
+        self.dropout_rate = dropout_rate
 
         self.pos_embedding = PositionalEmbedding(d_model)
 
@@ -200,6 +246,17 @@ class Encoder(tf.keras.layers.Layer):
             x = self.enc_layer[i](x)
 
         return x # Shape (batch_size, seq_len, d_model)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "num_layers": self.num_layers,
+            "d_model": self.d_model,
+            "num_heads": self.num_heads,
+            "dff": self.dff,
+            "dropout_rate": self.dropout_rate,
+        })
+        return config
     
 
 # ---------------------------------------------------------------------------- #
@@ -212,10 +269,16 @@ class DecoderLayer(tf.keras.layers.Layer):
                  d_model,
                  num_heads,
                  dff,
-                 dropout_rate=0.1
+                 dropout_rate=0.1,
+                 **kwargs
                  ):
 
-        super(DecoderLayer, self).__init__()
+        super().__init__(**kwargs)
+
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.dff = dff
+        self.dropout_rate = dropout_rate
 
         self.causal_self_attention = CausalSelfAttention(
             num_heads=num_heads,
@@ -240,15 +303,28 @@ class DecoderLayer(tf.keras.layers.Layer):
 
         x = self.ffn(x) # shape (batch_size, seq_len, d_model)
         return x
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "d_model": self.d_model,
+            "num_heads": self.num_heads,
+            "dff": self.dff,
+            "dropout_rate": self.dropout_rate,
+        })
+        return config
     
 # ---------------------------------------------------------------------------- #
 
 class Decoder(tf.keras.layers.Layer):
-    def __init__(self, *, num_layers, d_model, num_heads, dff, dropout_rate=.1):
-        super(Decoder, self).__init__()
+    def __init__(self, *, num_layers, d_model, num_heads, dff, dropout_rate=.1, **kwargs):
+        super().__init__(**kwargs)
 
         self.d_model = d_model
         self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.dff = dff
+        self.dropout_rate = dropout_rate
 
         self.pos_embedding = PositionalEmbedding(d_model=d_model)
         self.dropout = tf.keras.layers.Dropout(dropout_rate)
@@ -272,7 +348,18 @@ class Decoder(tf.keras.layers.Layer):
         self.last_attn_scores = self.dec_layers[-1].last_attn_scores
 
         return x
-    
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "num_layers": self.num_layers,
+            "d_model": self.d_model,
+            "num_heads": self.num_heads,
+            "dff": self.dff,
+            "dropout_rate": self.dropout_rate,
+        })
+        return config
+
 
 # ---------------------------------------------------------------------------- #
 #                                the Transformer                               #
@@ -282,9 +369,12 @@ class Transformer(tf.keras.Model):
     def __init__(self, *, num_layers, d_model, num_heads, dff,
                  dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
+        self.num_layers = num_layers
         self.d_model = d_model
         self.num_heads = num_heads
-        self.num_layers = num_layers
+        self.dff = dff
+        self.dropout_rate = dropout_rate
+
         self.encoder = Encoder(num_layers=num_layers,
                                d_model=d_model,
                                num_heads=num_heads,
@@ -298,7 +388,7 @@ class Transformer(tf.keras.Model):
                                dropout_rate=dropout_rate
                                )
 
-        self.final_layer = tf.keras.layers.Dense(1) # 
+        self.final_layer = tf.keras.layers.Dense(1) #
 
     def call(self, inputs):
             # If inputs is a single tensor, handle it directly
@@ -325,8 +415,21 @@ class Transformer(tf.keras.Model):
             pass
 
         return logits
-    
 
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "num_layers": self.num_layers,
+            "d_model": self.d_model,
+            "num_heads": self.num_heads,
+            "dff": self.dff,
+            "dropout_rate": self.dropout_rate,
+        })
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
 
 # ---------------------------------------------------------------------------- #
 #                               custom scheduler                               #
@@ -353,3 +456,23 @@ class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
             "d_model": self.d_model,
             "warmup_steps": self.warmup_steps,
         }
+
+
+# ---------------------------------------------------------------------------- #
+#                                   callbacks                                  #
+# ---------------------------------------------------------------------------- #
+
+def get_callbacks():
+    return [
+        EarlyStopping(
+            monitor='val_loss', 
+            patience=10, 
+            restore_best_weights=True
+        ),
+        ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=.5,
+            patience=2,
+            min_lr=0.000001
+        )
+    ]

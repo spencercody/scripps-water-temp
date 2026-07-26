@@ -27,7 +27,7 @@ def get_callbacks():
     return [
         EarlyStopping(
             monitor='val_loss', 
-            patience=5, 
+            patience=10, 
             restore_best_weights=True
         ),
         ReduceLROnPlateau(
