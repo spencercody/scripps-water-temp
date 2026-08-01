@@ -84,4 +84,6 @@ def collapse_to_daily(buoy_df):
         buoy_df.groupby(["date"])[["WSPD", "WDIR"]].mean().reset_index()
     )
 
+    daily_mean_buoy_data['date'] = daily_mean_buoy_data.date.dt.normalize()
+    daily_mean_buoy_data['date'] = daily_mean_buoy_data['date'].dt.tz_localize(None)
     return daily_mean_buoy_data
